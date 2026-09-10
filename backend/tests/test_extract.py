@@ -378,3 +378,27 @@ def test_a_font_program_stream_is_still_excluded():
     ops = "BT /F1 12 Tf\n72 700 Td (the only real text on this page) Tj\nET"
     result = extract("cv.pdf", pdf_with([content(ops), font]))
     assert result.text.strip() == "the only real text on this page"
+
+
+# --- pdf: octal escapes ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "literal,expected",
+    [
+        (rb"(\101)", "A"),
+        (rb"(\0)", "\x00"),
+        (rb"(\377)", "ÿ"),
+        (rb"(\7a)", "\x07a"),
+        (rb"(\78)", "\x078"),
+        # The one that was wrong: filtering non-octal bytes out of the 3-byte
+        # window merged `1` and `2` across the `a`, decoding \12 and dropping
+        # the letter entirely.
+        (rb"(\1a2)", "\x01a2"),
+        (rb"(\12abc)", "\nabc"),
+    ],
+)
+def test_octal_escapes_stop_at_the_first_non_octal_digit(literal, expected):
+    from resume_screen.extract import _decode_pdf_string
+
+    assert _decode_pdf_string(literal).decode("latin-1") == expected
