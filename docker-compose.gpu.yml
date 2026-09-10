@@ -1,0 +1,15 @@
+# NVIDIA GPU passthrough for the bundled ollama.
+#
+# Used by ./start.sh when it finds a working GPU runtime. Requires the NVIDIA
+# Container Toolkit on the host; without it, Compose fails to start the
+# service rather than silently running on CPU, which is the correct outcome —
+# a silent fallback is how a 28x slowdown goes unnoticed.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
