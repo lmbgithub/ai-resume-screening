@@ -238,3 +238,15 @@ def test_parse_extracted_never_raises():
     for raw in ["", "{", "null", "[]", '{"requirements": {}}', "\x00"]:
         requirements, error = parse_extracted(raw)
         assert requirements == () and error
+
+
+def test_every_unrecognised_heading_is_required():
+    # Only "preferred" needs recognising; an earlier version also matched a
+    # list of "required" hints and returned what the fallback already did.
+    for title in ["Requirements", "Ideal background", "Responsibilities", "Zzz"]:
+        assert classify_section(title) == "required"
+
+
+def test_preferred_still_wins_over_a_required_sounding_heading():
+    assert classify_section("Preferred qualifications") == "preferred"
+    assert classify_section("Nice to have requirements") == "preferred"

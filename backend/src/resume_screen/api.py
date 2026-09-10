@@ -159,8 +159,27 @@ def make_handler(config: Config) -> type[BaseHTTPRequestHandler]:
             except Exception as exc:  # last resort: never leak a stack trace
                 self._send(500, {"error": f"unexpected {type(exc).__name__}: {exc}"})
 
-        def _body(self) -> bytes:
-            length = int(self.headers.get("Content-Length") or 0)
+        def _body(self, limit: int) -> bytes:
+            """Read the request body, refusing an impossible length first.
+
+            Two things go wrong if this is left to `int()` and a later size
+            check. A malformed `Content-Length` raises inside `do_POST`, where
+            nothing catches it, so the client gets a dropped connection rather
+            than a 400. And checking the size only after `read(length)` means
+            a header claiming 500 MB is honoured in full and *then* rejected —
+            the ceiling has to apply before the read, not after it.
+            """
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                return b""
+            try:
+                length = int(raw)
+            except ValueError:
+                raise ApiError(400, f"Content-Length is not a number: {raw!r}") from None
+            if length < 0:
+                raise ApiError(400, f"Content-Length is negative: {length}")
+            if length > limit:
+                raise ApiError(413, f"request body exceeds {limit} bytes")
             return self.rfile.read(length) if length else b""
 
         def _segments(self) -> list[str]:
@@ -184,7 +203,23 @@ def make_handler(config: Config) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             parts = self._segments()
-            body = self._body()
+            # /extract carries a base64 file, so it gets the larger ceiling.
+            limit = UPLOAD_BODY_LIMIT if parts == ["extract"] else MAX_BODY_BYTES
+            try:
+                # The body is read even for a route that does not exist: this
+                # is HTTP/1.1 with keep-alive, and leaving an unread body in
+                # the socket desynchronises the next request on the connection.
+                body = self._body(limit)
+            except ApiError as exc:
+                # Refusing to read leaves the stream out of sync, so this
+                # connection cannot be reused whatever the client intended.
+                self.close_connection = True
+                self._send(exc.status, {"error": exc.message})
+                return
+            # Logged before the work starts, not after: a screening run is
+            # minutes on CPU, and a log that only prints on completion is
+            # indistinguishable from a hang.
+            print(f"POST {self.path} ({len(body)} bytes) — started", flush=True)
             if parts == ["screen"]:
                 self._route(200, lambda: handle_screen(config, body))
             elif parts == ["extract"]:

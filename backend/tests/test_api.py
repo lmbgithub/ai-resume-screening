@@ -1,13 +1,22 @@
 import base64
 import json
+import socket
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 
 import pytest
 
-from resume_screen.api import ApiError, Config, handle_extract, handle_screen, make_handler
+from resume_screen.api import (
+    UPLOAD_BODY_LIMIT,
+    ApiError,
+    Config,
+    handle_extract,
+    handle_screen,
+    make_handler,
+)
 from resume_screen.fakes import FakeClient
 from resume_screen.ollama import OllamaError
 from resume_screen.server import build_config, build_parser
@@ -413,3 +422,107 @@ def test_a_path_that_merely_starts_with_a_route_name_is_404(live_server):
 def test_a_trailing_slash_still_routes(live_server):
     status, _, body = request(f"{live_server}/health/")
     assert (status, body) == (200, {"ok": True})
+
+
+# --- request framing ---------------------------------------------------------
+
+
+def read_http_response(sock) -> tuple[bytes, bytes]:
+    """Read exactly one response: (status line, body).
+
+    A single `recv` is not one response — it can stop after the headers, which
+    leaves the body in the socket and makes the *next* read on a keep-alive
+    connection return the tail of the previous message. Framing has to be
+    honoured here or the test measures its own buffering.
+    """
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        chunk = sock.recv(65536)
+        if not chunk:
+            return buffer.split(b"\r\n")[0], b""
+        buffer += chunk
+    head, _, body = buffer.partition(b"\r\n\r\n")
+    lengths = [
+        line.split(b":", 1)[1].strip()
+        for line in head.split(b"\r\n")
+        if line.lower().startswith(b"content-length:")
+    ]
+    expected = int(lengths[0]) if lengths else 0
+    while len(body) < expected:
+        chunk = sock.recv(65536)
+        if not chunk:
+            break
+        body += chunk
+    return head.split(b"\r\n")[0], body
+
+
+def raw_request(url, head, payload=b""):
+    """Send a hand-built request, so malformed framing can be tested."""
+    parsed = urllib.parse.urlparse(url)
+    with socket.create_connection((parsed.hostname, parsed.port), timeout=10) as sock:
+        sock.sendall(head + payload)
+        status, body = read_http_response(sock)
+    return status + b"\r\n\r\n" + body
+
+
+def test_a_malformed_content_length_is_a_400_not_a_dropped_connection(live_server):
+    # `int()` on the header used to raise inside do_POST, where nothing caught
+    # it: the client got a closed socket and no way to tell what went wrong.
+    head = (
+        b"POST /screen HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Type: application/json\r\nContent-Length: abc\r\n\r\n"
+    )
+    response = raw_request(live_server, head)
+    assert response.startswith(b"HTTP/1.1 400")
+    assert b"Content-Length is not a number" in response
+
+
+def test_a_negative_content_length_is_a_400(live_server):
+    head = (
+        b"POST /screen HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Type: application/json\r\nContent-Length: -5\r\n\r\n"
+    )
+    assert raw_request(live_server, head).startswith(b"HTTP/1.1 400")
+
+
+def test_an_enormous_declared_body_is_refused_before_it_is_read(live_server):
+    # The ceiling has to apply before `read(length)`, not after: a header
+    # claiming 500 MB was previously honoured in full and then rejected.
+    head = (
+        b"POST /screen HTTP/1.1\r\nHost: x\r\n"
+        b"Content-Type: application/json\r\nContent-Length: 500000000\r\n\r\n"
+    )
+    response = raw_request(live_server, head)
+    assert response.startswith(b"HTTP/1.1 413")
+
+
+def test_the_upload_route_accepts_a_body_larger_than_the_screen_limit(live_server):
+    # base64 inflates by 4/3, so /extract must not inherit /screen's ceiling.
+    payload = json.dumps(
+        {"filename": "cv.md", "content_base64": base64.b64encode(CV.encode()).decode()}
+    ).encode()
+    assert len(payload) < UPLOAD_BODY_LIMIT
+    head = (
+        b"POST /extract HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+        b"Content-Length: %d\r\n\r\n" % len(payload)
+    )
+    assert raw_request(live_server, head, payload).startswith(b"HTTP/1.1 200")
+
+
+def test_a_404_still_consumes_the_body_so_the_connection_survives(live_server):
+    # Replying without draining the body desynchronises a keep-alive
+    # connection, and the *next* request on it fails instead of this one.
+    parsed = urllib.parse.urlparse(live_server)
+    payload = b'{"resume": "x", "job": "y"}'
+    with socket.create_connection((parsed.hostname, parsed.port), timeout=10) as sock:
+        sock.sendall(
+            b"POST /nope HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+            b"Content-Length: %d\r\n\r\n" % len(payload) + payload
+        )
+        status, _ = read_http_response(sock)
+        assert status.startswith(b"HTTP/1.1 404")
+
+        sock.sendall(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+        status, body = read_http_response(sock)
+    assert status.startswith(b"HTTP/1.1 200")
+    assert body == b'{"ok": true}'

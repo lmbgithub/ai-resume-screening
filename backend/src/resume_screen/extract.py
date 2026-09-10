@@ -207,10 +207,16 @@ def _decode_pdf_string(raw: bytes) -> bytes:
             out += _PDF_ESCAPES[nxt]
             i += 2
         elif nxt.isdigit():  # octal escape, up to three digits
-            digits = body[i + 1 : i + 4]
-            octal = bytes(c for c in digits if 0x30 <= c <= 0x37)
+            # The run must stop at the first non-octal byte rather than
+            # filtering them out: filtering turned `\1a2` into `\12`, which
+            # both decoded wrongly and swallowed the `a`.
+            octal = bytearray()
+            for byte in body[i + 1 : i + 4]:
+                if not 0x30 <= byte <= 0x37:
+                    break
+                octal.append(byte)
             out += bytes([int(octal, 8) & 0xFF]) if octal else b""
-            i += 1 + len(octal)
+            i += 1 + max(len(octal), 1)
         else:
             out += nxt
             i += 2

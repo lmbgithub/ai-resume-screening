@@ -31,14 +31,6 @@ from .ollama import Client, OllamaError
 REQUIRED_WEIGHT = 1.0
 PREFERRED_WEIGHT = 0.5
 
-_REQUIRED_HINTS = (
-    "required",
-    "must have",
-    "must-have",
-    "qualifications",
-    "you have",
-    "responsibilities",
-)
 _PREFERRED_HINTS = (
     "preferred",
     "nice to have",
@@ -67,14 +59,15 @@ class Requirement:
 def classify_section(title: str) -> str:
     """Map a job-description heading to a requirement kind.
 
-    'Preferred' is checked first: 'Preferred qualifications' contains both
-    hints, and the qualifier is the informative half.
+    Only "preferred" has to be recognised. Everything else is required,
+    including a heading nobody anticipated, because under-weighting a genuine
+    requirement is the worse error. An earlier version also matched a list of
+    "required" hints and then returned the same value as the fallback did,
+    which read like a decision but changed nothing.
     """
     lowered = title.lower()
     if any(hint in lowered for hint in _PREFERRED_HINTS):
         return "preferred"
-    if any(hint in lowered for hint in _REQUIRED_HINTS):
-        return "required"
     return "required"
 
 
