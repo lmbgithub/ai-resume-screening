@@ -1,8 +1,12 @@
 # resume-screen
 
-Upload a CV, paste a job description, and get a score with the requirements it
-evidences, the ones it does not, and what to change — using a **local Ollama
-model**. One page, no login, no accounts, nothing stored.
+Upload a CV, paste a job description, and get back a score, the requirements
+the CV evidences, the ones it does not, and what to change — all from a
+**local Ollama model**. One page, no login, no accounts, nothing stored.
+
+The intention is to show that a useful screening tool can run entirely on a
+laptop, with the scoring calibrated and testable rather than left to a single
+opaque prompt.
 
 The Python side is **standard library only** (`urllib`, `json`, `math`,
 `zipfile`, `zlib`, `xml`) — the API and the PDF/DOCX extraction included, so
@@ -106,7 +110,7 @@ subtracting the column mean removes how generic the resume line is; the grand
 mean is added back so the residuals sum to zero. What survives is only the part
 specific to _that_ pair. It is the same idea as IDF, done in embedding space.
 
-### 3. Centering changes which evidence the model sees — measurably
+### 3. Centering measurably changes which evidence the model sees
 
 Not a theoretical improvement. `examples/centering_effect.py` reruns it:
 
